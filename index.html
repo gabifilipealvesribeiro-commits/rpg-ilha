@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A Ilha dos 25</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="jogo">
+
+    <header class="barra">
+      <h1>A Ilha dos 25</h1>
+      <ul class="estado">
+        <li title="Dia">Dia <b id="st-dia">1</b></li>
+        <li title="Sobreviventes">Gente <b id="st-gente">25</b></li>
+        <li title="Comida">Comida <b id="st-comida">100</b></li>
+        <li title="Moral">Moral <b id="st-moral">50</b></li>
+      </ul>
+      <button id="btn-menu" class="btn-menu" type="button">Sobreviventes</button>
+    </header>
+
+    <section class="cena">
+      <canvas id="cena" width="320" height="180"></canvas>
+    </section>
+
+    <section class="painel pergunta">
+      <h2 id="pergunta-titulo">Pergunta 1 de 9</h2>
+      <p id="pergunta-texto"></p>
+    </section>
+
+    <section class="painel resposta">
+      <h2>Resposta</h2>
+      <textarea id="resposta-campo" rows="3" placeholder="Escreve aqui o que a ilha deve fazer..."></textarea>
+      <button id="btn-responder" type="button">Responder!</button>
+    </section>
+
+  </main>
+
+  <div id="menu" hidden>
+    <div class="menu-caixa" role="dialog" aria-label="Sobreviventes">
+      <button id="menu-fechar" class="fechar" type="button" aria-label="Fechar">X</button>
+      <div id="menu-lista"></div>
+      <div id="menu-ficha"></div>
+    </div>
+  </div>
+  <script src="js/regras.js"></script>
+  <script src="js/script.js"></script>
+</body>
+</html>
