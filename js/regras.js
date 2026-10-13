@@ -1,5 +1,20 @@
 "use strict";
 
+/* Sorte de jogo (não é segurança, por isso Math.random chega) */
+function sorte() {
+  return Math.random(); // NOSONAR
+}
+
+/* Devolve uma cópia da lista com a ordem trocada ao acaso */
+function baralhar(lista) {
+  const copia = [...lista];
+  for (let i = copia.length - 1; i > 0; i--) {
+    const j = Math.floor(sorte() * (i + 1));
+    [copia[i], copia[j]] = [copia[j], copia[i]];
+  }
+  return copia;
+}
+
 /* ========== MOTOR DE REGRAS (sem IA, sem custos, funciona offline) ==========
    1. Procura temas na resposta do jogador (democracia, castigo, partilha...)
    2. Cada tema mexe na moral e na comida
@@ -12,7 +27,7 @@ const TEMAS = {
   autoridade: "ditador|rei\\b|lider|chefe|manda|mando|obedec|autoridade|imperador|general|capitao|presidente",
   partilha:   "igual|partilh|dividir|dividid|racao|justo|justica|equit|todos comem|metade",
   merito:     "merito|trabalh|esforco|quem pesca|quem constroi|recompensa|produz|contribu",
-  castigo:    "castigo|expuls|exilio|exilad|prisao|preso|punic|punir|multa|banir|pena|jaula|sem comida",
+  castigo:    "castig|expuls|exilio|exilad|prisao|preso|punic|punir|multa|banir|pena|jaula|sem comida",
   dialogo:    "dialog|mediar|mediador|conversa|perdao|perdoar|aviso|advertencia|reuniao|acordo|negoci|ouvir",
   violencia:  "matar|lutar|luta|bater|violencia|guerra|armas|duelo|pancada|sangue",
   misticismo: "deus|reza|ritual|oraculo|sagrad|espirit|sorte|sorteio|palmeira",
@@ -75,7 +90,7 @@ function normalizar(texto) {
   return texto.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
-function aleatorio(lista) { return lista[Math.floor(Math.random() * lista.length)]; }
+function aleatorio(lista) { return lista[Math.floor(sorte() * lista.length)]; }
 
 /* Devolve { resumo, moral, comida, temas, reacoes: [{ nome, tipo, fala }] } */
 function interpretarComRegras(pergunta, resposta, sobreviventes) {
@@ -85,7 +100,7 @@ function interpretarComRegras(pergunta, resposta, sobreviventes) {
 
   // resposta vazia de sentido: três pessoas ficam confusas
   if (!temas.length || palavras < 2) {
-    const confusos = [...sobreviventes].sort(() => Math.random() - 0.5).slice(0, 3);
+    const confusos = baralhar(sobreviventes).slice(0, 3);
     return {
       resumo: "A ilha ficou a olhar para ti. Ninguém percebeu o que querias dizer (tenta ser mais concreto).",
       moral: -2, comida: 0, temas: [],
@@ -97,9 +112,9 @@ function interpretarComRegras(pergunta, resposta, sobreviventes) {
   const pontuados = sobreviventes.map((s) => {
     const p = PERFIS[s.nome] || { gosta: [], odeia: [] };
     const score = temas.filter((t) => p.gosta.includes(t)).length - temas.filter((t) => p.odeia.includes(t)).length;
-    return { s, p, score, sorte: Math.random() };
+    return { s, p, score, acaso: sorte() };
   }).filter((x) => x.score !== 0)
-    .sort((a, b) => Math.abs(b.score) - Math.abs(a.score) || a.sorte - b.sorte)
+    .sort((a, b) => Math.abs(b.score) - Math.abs(a.score) || a.acaso - b.acaso)
     .slice(0, 6);
 
   const reacoes = pontuados.map((x) => ({

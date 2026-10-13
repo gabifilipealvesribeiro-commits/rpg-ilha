@@ -15,7 +15,7 @@
 html, body { height: 100%; }
 
 body {
-  font-family: "Pixelify Sans", monospace;
+  font-family: "Fredoka", "Trebuchet MS", "Segoe UI", sans-serif;
   font-size: clamp(14px, 2.2vmin, 22px);
   background: #0f2a36;
   color: var(--pergaminho);
@@ -33,7 +33,7 @@ body {
 }
 
 /* Barra de topo */
-.barra {
+.barra-topo {
   grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
@@ -45,7 +45,7 @@ body {
   border: calc(var(--u) * 1.5) solid var(--madeira-escura);
   box-shadow: inset 0 calc(var(--u) * 1) 0 var(--madeira-clara);
 }
-.barra h1 { font-size: 1.5em; font-weight: 600; color: var(--pergaminho); text-shadow: var(--u) var(--u) 0 var(--tinta); }
+.barra-topo h1 { font-size: 1.5em; font-weight: 600; color: var(--pergaminho); text-shadow: var(--u) var(--u) 0 var(--tinta); }
 .estado { display: flex; flex-wrap: wrap; gap: calc(var(--u) * 3); list-style: none; }
 .estado li {
   padding: calc(var(--u) * 1) calc(var(--u) * 3);
@@ -128,7 +128,7 @@ button:disabled { filter: grayscale(1); cursor: wait; }
 }
 
 /* Botão do menu */
-.btn-menu { align-self: center; background: var(--madeira-clara); border-color: var(--madeira-escura); box-shadow: 0 calc(var(--u) * 1.5) 0 var(--madeira-escura); text-shadow: var(--u) var(--u) 0 var(--tinta); }
+.btn-menu { align-self: center; background: var(--madeira-clara); border-color: var(--madeira-escura); box-shadow: 0 calc(var(--u) * 1.5) 0 var(--madeira-escura); text-shadow: 1px 2px 0 var(--tinta); }
 
 /* Menu dos sobreviventes */
 #menu[hidden] { display: none; }
@@ -158,7 +158,7 @@ button:disabled { filter: grayscale(1); cursor: wait; }
 .traco { font-style: italic; }
 .chip { align-self: flex-start; padding: 0 calc(var(--u) * 2); background: var(--tinta); color: var(--pergaminho); }
 .linha-barra { display: grid; grid-template-columns: 4.5em 1fr 2.5em; align-items: center; gap: calc(var(--u) * 2); }
-.barra.topo { height: 1em; background: #d8c593; border: calc(var(--u) * 0.8) solid var(--tinta); }
+.barra { height: 1em; background: #d8c593; border: calc(var(--u) * 0.8) solid var(--tinta); }
 .enchimento { height: 100%; }
 .enchimento.vida { background: #4f9a3a; }
 .enchimento.fome { background: #d9822b; }
@@ -168,3 +168,42 @@ button:disabled { filter: grayscale(1); cursor: wait; }
 @media (max-aspect-ratio: 1/1), (max-width: 700px) {
   .menu-caixa { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1.2fr); }
 }
+
+/* eventos do dia em várias linhas */
+#pergunta-texto { white-space: pre-line; }
+.cartao.morto { opacity: 0.45; filter: grayscale(1); }
+
+/* Constituição */
+#const[hidden] { display: none; }
+#const { position: fixed; inset: 0; z-index: 11; display: grid; place-items: center; padding: calc(var(--u) * 4); background: rgba(10, 5, 2, 0.78); }
+.const-caixa { width: min(100%, 820px); max-height: 100%; display: flex; flex-direction: column; gap: calc(var(--u) * 2); padding: calc(var(--u) * 4); background: var(--madeira); border: calc(var(--u) * 1.5) solid var(--madeira-escura); box-shadow: inset 0 calc(var(--u) * 1) 0 var(--madeira-clara); overflow: hidden; }
+.const-acoes { display: flex; flex-wrap: wrap; gap: calc(var(--u) * 2); justify-content: flex-end; }
+.const-acoes button { align-self: auto; }
+#const-doc { overflow-y: auto; padding: calc(var(--u) * 5) calc(var(--u) * 6); background: var(--pergaminho); color: var(--tinta); border: calc(var(--u) * 1) solid var(--madeira-escura); line-height: 1.4; }
+#const-doc h2 { text-align: center; font-size: 1.8em; margin-bottom: 0.3em; }
+#const-doc h4 { margin-top: 1.1em; font-size: 1.15em; border-bottom: calc(var(--u) * 0.6) solid var(--madeira-clara); }
+#const-doc h5 { margin-top: 0.9em; font-size: 1em; font-style: italic; }
+#const-doc p { margin-top: 0.3em; }
+
+@media print {
+  html, body { height: auto; overflow: visible; background: #fff; }
+  body > *:not(#const) { display: none !important; }
+  #const { position: static; display: block; padding: 0; background: none; }
+  .const-caixa { max-height: none; padding: 0; background: none; border: 0; box-shadow: none; overflow: visible; }
+  .const-acoes { display: none; }
+  #const-doc { overflow: visible; padding: 0; background: #fff; border: 0; font-size: 12pt; }
+}
+
+/* Durante a animação inicial só se vê a narração (a caixa de resposta fica escondida) */
+.jogo.intro .resposta { display: none; }
+.jogo.intro .pergunta { grid-column: 1 / -1; }
+@media (max-aspect-ratio: 1/1), (max-width: 700px) {
+  .jogo.intro { grid-template-rows: auto minmax(0, 1.4fr) minmax(0, 0.8fr); }
+}
+
+/* Aviso de ficheiros em falta */
+#aviso[hidden] { display: none; }
+#aviso { position: fixed; left: calc(var(--u) * 3); bottom: calc(var(--u) * 3); z-index: 20; max-width: min(90vw, 460px); padding: calc(var(--u) * 2) calc(var(--u) * 3); background: var(--pergaminho); color: var(--tinta); border: calc(var(--u) * 1) solid var(--madeira-escura); font-size: 0.85em; line-height: 1.3; cursor: pointer; }
+
+/* as caixas do menu e da Constituição são <dialog>: anula o estilo por defeito do browser */
+dialog.const-caixa, dialog.menu-caixa { position: relative; inset: auto; margin: 0; color: inherit; max-width: 100%; }

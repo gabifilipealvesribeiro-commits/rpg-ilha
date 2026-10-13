@@ -53,7 +53,17 @@ const estado = {
   gente: 25,
   comida: 100,
   moral: 50,
+  legitimidade: 50,   // quanto a ilha confia na Constituição (sobe se a respeitares, desce se a violares)
+  lider: null,        // nome de quem manda (artigo 1)
   perguntaAtual: 0,
+  perguntasConcluidas: false,
+  producao: 1.5,   // comida produzida por dia (cresce com as decisões)
+  ultimoIncidente: 0,
+  ultimaSituacao: {},       // id da situação -> último dia em que apareceu
+  ultimaSituacaoId: null,
+  emendas: [],     // alterações à Constituição ao longo do tempo: { dia, texto }
+  casos: [],       // incidentes julgados: { dia, caso, decisao, consequencias }
+  tensao: {},      // brigas entre pares ("A|B" -> número)
   constituicao: [] // { pergunta, resposta, resultado }
 };
 
@@ -66,10 +76,12 @@ const el = {
   gente: document.getElementById("st-gente"),
   comida: document.getElementById("st-comida"),
   moral: document.getElementById("st-moral"),
+  lei: document.getElementById("st-lei"),
   titulo: document.getElementById("pergunta-titulo"),
   texto: document.getElementById("pergunta-texto"),
   campo: document.getElementById("resposta-campo"),
-  botao: document.getElementById("btn-responder")
+  botao: document.getElementById("btn-responder"),
+  avancar: document.getElementById("btn-avancar")
 };
 
 /* Canvas com altura fixa e largura que acompanha o ecrã (sem barras) */
@@ -89,36 +101,67 @@ window.addEventListener("resize", ajustarCanvas);
 function atualizarEstado() {
   el.dia.textContent = estado.dia;
   el.gente.textContent = estado.gente;
-  el.comida.textContent = estado.comida;
-  el.moral.textContent = estado.moral;
+  el.comida.textContent = Math.round(estado.comida);
+  el.moral.textContent = Math.round(estado.moral);
+  if (el.lei) el.lei.textContent = Math.round(estado.legitimidade ?? 50);
 }
 
-function mostrarPergunta() {
-  const i = estado.perguntaAtual;
-  el.titulo.textContent = `Pergunta ${i + 1} de ${PERGUNTAS.length}`;
-  el.texto.textContent = PERGUNTAS[i];
+/* ========== O CICLO DO JOGO: pergunta -> dias -> incidentes -> pergunta ... ========== */
+const DIAS_POR_PERGUNTA = 3;   // dias que a ilha vive depois de cada decisão
+const DIA_MS = 7000;           // duração de um dia (o botão "Avançar dia" salta a espera)
+let modo = "intro";            // "intro" | "pergunta" | "dias" | "incidente" | "fim"
+let incidente = null;
+let situacaoAtual = null;   // a situação em curso depois das 9 perguntas (null = pergunta base)
+let diasRestantes = 0;
+let timerDia = null;
+
+const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function bloquearResposta(msg) {
+  el.campo.disabled = true;
+  el.botao.disabled = true;
   el.campo.value = "";
+  el.campo.placeholder = msg;
+}
+
+function liberarResposta(placeholder, rotuloBotao) {
+  el.campo.disabled = false;
+  el.botao.disabled = false;
+  el.campo.value = "";
+  el.campo.placeholder = placeholder;
+  el.botao.textContent = rotuloBotao;
   el.campo.focus();
 }
 
-/* Fome, vida e humor de cada um mudam ao passar o dia */
-function atualizarPessoasDoDia(resultado) {
-  const reagiu = {};
-  (resultado.reacoes || []).forEach((r) => { reagiu[r.nome] = r.tipo; });
-  const ganhoFome = estado.comida > 60 ? 5 : estado.comida > 30 ? 10 : 18;
-  pessoas.forEach((q) => {
-    q.fome = Math.min(100, q.fome + ganhoFome);
-    q.vida = q.fome >= 80 ? Math.max(0, q.vida - 10) : Math.min(100, q.vida + 3);
-    const t = reagiu[q.nome];
-    const delta = (t === "apoio" ? 8 : t === "revolta" ? -10 : t === "duvida" ? -2 : 0)
-                + Math.round(resultado.moral / 3) - (q.fome >= 70 ? 5 : 0);
-    q.moralInd = Math.max(0, Math.min(100, q.moralInd + delta));
-  });
+function mostrarPergunta(situacaoId) {
+  modo = "pergunta";
+  el.avancar.hidden = true;
+  if (estado.perguntasConcluidas) {                 // depois das 9 perguntas, a ilha cria as suas próprias situações
+    situacaoAtual = (situacaoId && situacaoPorId(situacaoId)) || escolherSituacao();
+    el.titulo.textContent = situacaoAtual.titulo;
+    el.texto.textContent = `${situacaoAtual.texto}\n\nO que decides?`;
+    liberarResposta("Escreve a tua decisão...", "Decidir!");
+  } else {
+    situacaoAtual = null;
+    const i = estado.perguntaAtual;
+    el.titulo.textContent = `Pergunta ${i + 1} de ${PERGUNTAS.length}`;
+    el.texto.textContent = PERGUNTAS[i];
+    liberarResposta("Escreve aqui o que a ilha deve fazer...", "Responder!");
+  }
+  guardarJogo();
 }
 
-/* Passo 5: aqui vai ligar à IA. Por agora devolve um resultado de teste. */
+/* Passo 5: aqui vai ligar à IA. Por agora usa as regras. */
 async function interpretarResposta(pergunta, resposta) {
-  return interpretarComRegras(pergunta, resposta, SOBREVIVENTES);   // depois: tentar a IA e usar isto como reserva
+  return interpretarComRegras(pergunta, resposta, acordados());   // depois: tentar a IA e usar isto como reserva
+}
+
+/* efeitos de uma decisão (pergunta ou incidente) */
+function aplicarResultado(r) {
+  estado.comida = limitar(estado.comida + r.comida);
+  estado.moral = limitar(estado.moral + r.moral);
+  (r.temas || []).forEach((t) => { estado.producao = Math.min(PRODUCAO_MAX, estado.producao + (PRODUCAO[t] || 0)); });
+  atualizarEstado();
 }
 
 async function responder() {
@@ -128,35 +171,119 @@ async function responder() {
     el.campo.placeholder = "Tens de escrever alguma coisa, a ilha não adivinha!";
     return;
   }
-  el.botao.disabled = true;
-  el.campo.disabled = true;
-  const pergunta = PERGUNTAS[estado.perguntaAtual];
-  const resultado = await interpretarResposta(pergunta, resposta);
-
-  estado.constituicao.push({ pergunta, resposta, resultado });
-  estado.comida = Math.max(0, Math.min(100, estado.comida + resultado.comida - 4));   // -4: o que comem todos os dias
-  estado.moral = Math.max(0, Math.min(100, estado.moral + resultado.moral));
-  estado.dia += 1;
-  atualizarEstado();
-  atualizarPessoasDoDia(resultado);
-
-  mostrarReacoes(resultado);
-  el.titulo.textContent = "A ilha reage";
-  el.texto.textContent = resultado.resumo;
-  await new Promise((r) => setTimeout(r, 5000));
-
-  if (estado.perguntaAtual < PERGUNTAS.length - 1) {
-    estado.perguntaAtual += 1;
-    el.campo.disabled = false;
-    mostrarPergunta();
-  } else {
-    el.titulo.textContent = "Fim!";
-    el.texto.textContent = "A Constituição da Ilha está pronta (Passo 6).";
-    el.campo.disabled = true;
-    return;
-  }
-  el.botao.disabled = false;
+  if (modo === "pergunta") await responderPergunta(resposta);
+  else if (modo === "incidente") await responderIncidente(resposta);
 }
+
+async function responderPergunta(resposta) {
+  bloquearResposta("A ilha está a pensar...");
+  const sit = situacaoAtual;
+  const pergunta = sit ? sit.texto : PERGUNTAS[estado.perguntaAtual];
+  const resultado = await interpretarResposta(pergunta, resposta);
+  if (sit) {                                        // uma situação vira emenda à Constituição
+    estado.emendas.push({ dia: estado.dia, titulo: sit.titulo, texto: `Decidiu-se: “${resposta}”.` });
+    estado.ultimaSituacao[sit.id] = estado.dia;
+    estado.ultimaSituacaoId = sit.id;
+    if (!resultado.temas.length && sit.aoIgnorar) sit.aoIgnorar();
+  } else {
+    estado.constituicao.push({ pergunta, resposta, resultado });
+  }
+  aplicarResultado(resultado);
+  mostrarReacoes(resultado);
+  let texto = resultado.resumo;
+  if (sit) {
+    if (resultado.temas.length) estado.legitimidade = limitar((estado.legitimidade ?? 50) + (sit.ganhoLegitimidade ?? 2));
+  } else if (estado.perguntaAtual === 0) {                 // artigo 1: quem manda
+    const lider = detetarLider(resposta, resultado);
+    if (lider) { estado.lider = lider; texto += `\n${lider} foi escolhido para liderar a ilha.`; }
+  }
+  atualizarEstado();
+  el.titulo.textContent = "A ilha reage";
+  el.texto.textContent = texto;
+  await espera(5000);
+  if (sit && sit.id === "barco" && RESGATE.test(normalizar(resposta))) { fim("resgate"); return; }
+  if (!sit) {
+    if (estado.perguntaAtual < PERGUNTAS.length - 1) estado.perguntaAtual += 1;
+    else estado.perguntasConcluidas = true;
+  }
+  iniciarDias(DIAS_POR_PERGUNTA);
+}
+
+function iniciarDias(n) {
+  modo = "dias";
+  diasRestantes = n;
+  bloquearResposta("A ilha vive o seu dia...");
+  el.avancar.hidden = false;
+  el.titulo.textContent = "A ilha vive";
+  el.texto.textContent = "Observa a ilha. Quando algo exigir uma decisão tua, vais ser chamado.";
+  clearTimeout(timerDia);
+  timerDia = setTimeout(proximoDia, DIA_MS);
+  guardarJogo();
+}
+
+function proximoDia() {
+  clearTimeout(timerDia);
+  if (modo !== "dias") return;
+  estado.dia += 1;
+  const { eventos, incidente: inc } = passarDia();
+  atualizarEstado();
+  diasRestantes -= 1;
+  el.titulo.textContent = `Dia ${estado.dia}`;
+  el.texto.textContent = eventos.join("\n");
+
+  if (inc) {                                    // a ilha pára à espera da tua decisão
+    modo = "incidente";
+    incidente = inc;
+    el.avancar.hidden = true;
+    timerDia = setTimeout(mostrarIncidente, 3500);
+  } else {
+    timerDia = setTimeout(diasRestantes > 0 ? proximoDia : seguinte, DIA_MS);
+  }
+  guardarJogo();
+}
+
+function mostrarIncidente() {
+  if (modo !== "incidente" || !incidente) return;
+  el.titulo.textContent = `Incidente (dia ${estado.dia})`;
+  const artigo = citarArtigoDoIncidente(incidente.tipo);   // a Constituição lembra o que ficou escrito
+  el.texto.textContent = `${incidente.descricao}${artigo ? `\n\n${artigo}` : ""}\n\nComo reages?`;
+  liberarResposta("Escreve como reages (castigo, diálogo, partilha...)", "Decidir!");
+}
+
+async function responderIncidente(resposta) {
+  bloquearResposta("A ilha ouve a tua decisão...");
+  const r = resolverIncidente(incidente, resposta);
+  aplicarResultado(r);
+  mostrarReacoes(r);
+  el.titulo.textContent = "A ilha reage";
+  el.texto.textContent = [r.resumo, ...r.extras].join("\n");
+  await espera(5000 + Math.min(r.extras.length, 3) * 1200);
+  incidente = null;
+  if (diasRestantes > 0) iniciarDias(diasRestantes); else seguinte();
+}
+
+function seguinte() {
+  clearTimeout(timerDia);
+  if (estado.gente <= 0) fim("extincao"); else mostrarPergunta();   // o jogo continua até todos morrerem ou serem resgatados
+}
+
+function fim(motivo) {
+  modo = "fim";
+  clearTimeout(timerDia);
+  el.avancar.hidden = true;
+  apagarSave();
+  const vivos = pessoas.filter(vivo).length;
+  el.titulo.textContent = motivo === "resgate" ? "Resgatados!" : "Fim do jogo";
+  el.texto.textContent = motivo === "resgate"
+    ? `O barco viu o vosso sinal. Os ${vivos} sobreviventes foram resgatados ao fim de ${estado.dia} dias. A Constituição da Ilha fica para a história (abre-a e guarda-a antes de recomeçar!).`
+    : `A ilha ficou vazia ao fim de ${estado.dia} dias. Ninguém sobreviveu para contar a história, mas a Constituição ficou escrita (abre-a e guarda-a).`;
+  bloquearResposta('O jogo terminou. Usa "Novo jogo" para recomeçar.');
+}
+
+el.avancar.addEventListener("click", () => {
+  if (modo !== "dias") return;
+  if (diasRestantes > 0) proximoDia(); else seguinte();
+});
 
 el.botao.addEventListener("click", () => responder().catch(console.error));
 el.campo.addEventListener("keydown", (e) => {
@@ -202,17 +329,18 @@ let pessoas = [];
 function criarPessoas() {
   pessoas = imagens.pessoas.map((img, i) => ({
     img,
+    iconeUrl: urlDoSprite(img),
     nome: SOBREVIVENTES[i].nome,
     traco: SOBREVIVENTES[i].traco,
     fila: i < 13 ? 0 : 1,          // 0 = fila da frente (13), 1 = fila de trás (12)
     col: i % 13,
-    off: Math.random() * 6,        // desfasamento para não andarem todos em sincronia
-    saida: 6500 + Math.random() * 2200, // momento em que salta do barco
+    off: sorte() * 6,        // desfasamento para não andarem todos em sincronia
+    saida: 6500 + sorte() * 2200, // momento em que salta do barco
     estado: "barco",               // "barco" | "voo" | "agua"
     x: 0, y: 0, vx: 0, vy: 0,
-    vida: 100, fome: 10, moralInd: 50   // estado individual, mostrado no menu
+    vida: 100, fome: 5 + Math.floor(sorte() * 15), moralInd: 50, morto: false, desmaiado: false   // estado individual, mostrado no menu
   }));
-  const ordem = pessoas.map((_, i) => i).sort(() => Math.random() - 0.5);
+  const ordem = baralhar(pessoas.map((_, i) => i));
   pessoas.forEach((q, i) => { q.slot = ordem[i]; q.prof = ordem[i] % 3; });
 }
 
@@ -286,6 +414,7 @@ const NARRACAO = [
   { t: 0,     texto: "Era uma vez um barco com 25 pessoas muito confiantes e zero conhecimentos de navegação." },
   { t: 3500,  texto: "Tempestade! O capitão garantiu que era só uma nuvem passageira." },
   { t: 5500,  texto: "O capitão deixou de garantir fosse o que fosse." },
+  { t: 6100,  texto: "BUM! Um raio acertou em cheio no mastro." },
   { t: 6500,  texto: "Agora é cada um por si! O barco concluiu que o fundo do mar era mais sossegado." },
   { t: 10000, texto: "Boas notícias: os 25 safaram-se a nado. Más notícias: a ilha não tem governo, polícia nem moeda." }
 ];
@@ -322,14 +451,14 @@ function atualizarPessoas(t, agora, dt, b) {
     if (q.estado === "barco" && t >= q.saida) {            // salta do barco
       const w = aMundo(b, localPessoa(q).x, localPessoa(q).y);
       q.x = w.x; q.y = w.y;
-      q.vx = (Math.random() - 0.5) * 0.08 + (w.x < LARGURA / 2 ? -0.03 : 0.03);
-      q.vy = -0.16 - Math.random() * 0.1;
+      q.vx = (sorte() - 0.5) * 0.08 + (w.x < LARGURA / 2 ? -0.03 : 0.03);
+      q.vy = -0.16 - sorte() * 0.1;
       q.estado = "voo";
     } else if (q.estado === "voo") {
       q.x += q.vx * dt; q.y += q.vy * dt; q.vy += 0.0004 * dt;
       if (q.y >= SUPERFICIE && q.vy > 0) {                 // cai à água
         q.estado = "agua";
-        for (let i = 0; i < 5; i++) bolhas.push({ x: q.x + Math.random() * 12 - 6, y: SUPERFICIE + 4, v: 0.4 + Math.random() * 0.6, r: 1 });
+        for (let i = 0; i < 5; i++) bolhas.push({ x: q.x + sorte() * 12 - 6, y: SUPERFICIE + 4, v: 0.4 + sorte() * 0.6, r: 1 });
       }
     } else if (q.estado === "agua") {                      // nada até ao seu lugar
       const dx = nxAgua(q) - q.x;
@@ -345,7 +474,7 @@ function atualizarBolhas(t, agora, dt, b) {
   const afundar = t >= 6500 && t < 10000;
   if ((afundar && agora - ultimaBolha > 70) || (!afundar && t >= 10000 && agora - ultimaBolha > 450)) {
     ultimaBolha = agora;
-    bolhas.push({ x: b.cx + (Math.random() - 0.5) * BW * 0.6, y: b.cy, v: 0.3 + Math.random() * 0.5, r: 1 + Math.floor(Math.random() * 2) });
+    bolhas.push({ x: b.cx + (sorte() - 0.5) * BW * 0.6, y: b.cy, v: 0.3 + sorte() * 0.5, r: 1 + Math.floor(sorte() * 2) });
   }
   bolhas.forEach((o) => { o.y -= o.v * dt / 16; });
   bolhas = bolhas.filter((o) => o.y > SUPERFICIE - 4);
@@ -369,7 +498,7 @@ function desenharSobreviventes(agora) {
 }
 
 /* ========== PRAIA (a chegada à ilha) ========== */
-const PASTA_PRAIA = "assets/Beach-2D-Backgrounds/game_background_2/layers/"; // muda aqui se mudares a pasta
+const PASTAS_PRAIA = ["assets/Beach-2D-Backgrounds/game_background_2/layers/", "assets/praia/2/layers/", "assets/praia/layers/", "assets/praia/2/", "assets/praia/"];
 const CAMADAS_PRAIA = ["sky", "cloud", "sea", "land", "decor"];
 const CHEGADA_FIM = 9000;
 const NARRACAO_PRAIA = [
@@ -384,8 +513,11 @@ const praia = { img: {}, cache: {}, chave: 0, escala: 1, ox: 0, oy: 0 };
 const rato = { x: -99, y: -99 };
 
 async function carregarPraia() {
-  const lista = await Promise.all(CAMADAS_PRAIA.map((n) => carregarImagem(`${PASTA_PRAIA}${n}.png`)));
-  CAMADAS_PRAIA.forEach((n, i) => { praia.img[n] = lista[i]; });
+  const lista = await Promise.all(CAMADAS_PRAIA.map((n) => carregarPrimeira(candidatosPraia(n))));
+  CAMADAS_PRAIA.forEach((n, i) => {
+    praia.img[n] = lista[i];
+    if (!lista[i]) faltas.push(`praia: ${n}.png`);
+  });
 }
 
 /* Ajusta as camadas (1920x1080) à altura da cena. Se o ecrã for mais largo que a imagem,
@@ -394,7 +526,12 @@ const PAD_PRAIA = 20; // margem extra para as nuvens e o mar se mexerem sem most
 
 function prepararPraia() {
   const ref = praia.img.sky || praia.img.land;
-  if (!ref || praia.chave === LARGURA) return;
+  if (praia.chave === LARGURA) return;
+  if (!ref) {                                  // sem imagens: usa o cenário de emergência
+    praia.chave = LARGURA; praia.escala = ALTURA / 1080; praia.ox = 0; praia.oy = 0;
+    if (fase === "praia") atribuirLugares();
+    return;
+  }
   praia.chave = LARGURA;
   praia.escala = ALTURA / ref.height;
   praia.ox = -PAD_PRAIA;
@@ -445,15 +582,15 @@ function iniciarPraia(agora) {
   prepararPraia();      // antes de mudar de fase, para ainda não atribuir lugares
   fase = "praia";
   tPraia = agora;
-  const ordem = pessoas.map((_, i) => i).sort(() => Math.random() - 0.5);
+  const ordem = baralhar(pessoas.map((_, i) => i));
   pessoas.forEach((q, i) => {
     q.estado = "praia";
     q.lug = ordem[i];
-    q.jx = Math.random() * 8 - 4;
-    q.jy = Math.random() * 4 - 2;
-    q.x = LARGURA * (0.05 + Math.random() * 0.9);
-    q.y = (790 + Math.random() * 50) * praia.escala + praia.oy;   // começam no mar pouco fundo
-    q.atraso = Math.random() * 4500;
+    q.jx = sorte() * 8 - 4;
+    q.jy = sorte() * 4 - 2;
+    q.x = LARGURA * (0.05 + sorte() * 0.9);
+    q.y = (790 + sorte() * 50) * praia.escala + praia.oy;   // começam no mar pouco fundo
+    q.atraso = sorte() * 4500;
     q.andando = false;
     q.linha = 0;
   });
@@ -475,7 +612,7 @@ function mostrarReacoes(resultado) {
 }
 
 function desenharFala(q) {
-  ctx.font = "8px 'Pixelify Sans', monospace";
+  ctx.font = "500 9px Fredoka, sans-serif";
   ctx.textAlign = "left";
   const maxW = 96, linhas = [];
   let atual = "";
@@ -495,19 +632,48 @@ function desenharFala(q) {
   ctx.fillRect(Math.round(q.x) - 1, y + h + 1, 3, 3);   // bico do balão
 }
 
+/* linha da folha de sprites: 0 baixo, 1 esquerda, 2 direita */
+function direcaoDe(dx, dy) {
+  if (Math.abs(dx) <= Math.abs(dy)) return 0;
+  return dx < 0 ? 1 : 2;
+}
+
+function velocidadeDe(emConflito, passeando) {
+  if (emConflito) return 0.08;
+  return passeando ? 0.022 : 0.035;
+}
+
+/* quem já chegou dá uma volta pela areia (dentro da zona de praia) */
+function novoPasseio(q) {
+  const yMin = 925 * praia.escala + praia.oy, yMax = 1055 * praia.escala + praia.oy;
+  q.alvoX = Math.max(16, Math.min(LARGURA - 16, q.x + (sorte() - 0.5) * 140));
+  q.alvoY = yMin + sorte() * (yMax - yMin);
+  q.passeando = true;
+  q.pausaAte = 0;
+}
+
 function atualizarChegada(tp, dt) {
+  const agoraMs = performance.now();
   pessoas.forEach((q) => {
     if (tp < q.atraso) return;
-    const dx = q.alvoX - q.x, dy = q.alvoY - q.y, d = Math.hypot(dx, dy);
+    if (q.morto || q.exilado || q.desmaiado) { q.andando = false; return; }
+    const emConflito = q.irPara && agoraMs < q.irAte;
+    const dx = (emConflito ? q.irPara.x : q.alvoX) - q.x, dy = (emConflito ? q.irPara.y : q.alvoY) - q.y, d = Math.hypot(dx, dy);
     if (d > 0.8) {
-      const passo = Math.min(0.035 * dt, d);
+      const passo = Math.min(velocidadeDe(emConflito, q.passeando) * dt, d);
       q.x += dx / d * passo;
       q.y += dy / d * passo;
       q.andando = true;
-      q.linha = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 1 : 2) : 0;
+      q.linha = direcaoDe(dx, dy);
     } else {
-      q.andando = false;
-      q.linha = 0;
+      if (q.andando) {                       // acabou de chegar: olha para um lado e faz uma pausa
+        q.andando = false;
+        q.passeando = false;
+        q.linha = [0, 0, 1, 2][Math.floor(sorte() * 4)];
+        q.pausaAte = 0;
+      }
+      if (!q.pausaAte) q.pausaAte = agoraMs + 800 + sorte() * 3500;
+      if (tp >= CHEGADA_FIM && agoraMs > q.pausaAte) novoPasseio(q);   // depois da chegada, vai dar outra volta
     }
   });
 }
@@ -515,6 +681,11 @@ function atualizarChegada(tp, dt) {
 function desenharPraia(agora) {
   ctx.fillStyle = "#8fe3f0"; ctx.fillRect(0, 0, LARGURA, ALTURA);
   const c = praia.cache, ox = praia.ox, oy = praia.oy;
+  if (!c.sky && !c.land) {                     // cenário de emergência (faltam as imagens)
+    ctx.fillStyle = "#4fc9cf"; ctx.fillRect(0, Math.round(ALTURA * 0.45), LARGURA, Math.round(ALTURA * 0.4));
+    ctx.fillStyle = "#e8f8f8"; ctx.fillRect(0, Math.round(ALTURA * 0.82), LARGURA, 2);
+    ctx.fillStyle = "#f0d890"; ctx.fillRect(0, Math.round(ALTURA * 0.83), LARGURA, ALTURA);
+  }
   if (c.sky)   ctx.drawImage(c.sky, ox, oy);
   if (c.cloud) ctx.drawImage(c.cloud, ox + Math.round(Math.sin(agora / 5000) * 10), oy);   // nuvens a flutuar
   if (c.sea)   ctx.drawImage(c.sea, ox, oy + Math.round(Math.sin(agora / 900) * 1.5));      // mar a balançar
@@ -522,22 +693,53 @@ function desenharPraia(agora) {
   if (c.decor) ctx.drawImage(c.decor, ox, oy);
 }
 
+function desenharCruz(q) {
+  const x = Math.round(q.x), y = Math.round(q.y);
+  ctx.fillStyle = "rgba(0,0,0,0.2)"; ctx.fillRect(x - 6, y - 1, 12, 2);
+  ctx.fillStyle = "#6b4224"; ctx.fillRect(x - 1, y - 14, 3, 14); ctx.fillRect(x - 5, y - 11, 11, 3);
+  ctx.fillStyle = "#9a6a3a"; ctx.fillRect(x - 1, y - 14, 1, 14);
+}
+
 function desenharChegada(tp, agora) {
-  const lista = pessoas.filter((q) => q.img && tp >= q.atraso).sort((a, b) => a.y - b.y);
+  const lista = pessoas.filter((q) => q.img && !q.exilado && tp >= q.atraso).sort((a, b) => a.y - b.y);
   lista.forEach((q) => {
-    const frame = q.andando ? ORDEM_ANIM[Math.floor(agora / 130 + q.off) % 4] : 1;
     ctx.globalAlpha = Math.min(1, (tp - q.atraso) / 400);
+    if (q.morto) { desenharCruz(q); return; }
+    const frame = q.andando ? ORDEM_ANIM[Math.floor(agora / 130 + q.off) % 4] : 1;
     ctx.fillStyle = "rgba(0,0,0,0.2)";
-    ctx.fillRect(Math.round(q.x - 7), Math.round(q.y - 1), 14, 2);                         // sombra
+    ctx.fillRect(Math.round(q.x - (q.desmaiado ? 14 : 7)), Math.round(q.y - 1), q.desmaiado ? 28 : 14, 2);   // sombra
+    if (q.desmaiado) {                                   // deitado no chão
+      ctx.save();
+      ctx.translate(Math.round(q.x - 4), Math.round(q.y - 2));
+      ctx.rotate(Math.PI / 2);
+      ctx.drawImage(q.img, SPRITE, 0, SPRITE, SPRITE, -16, -30, SPRITE, SPRITE);
+      ctx.restore();
+      ctx.font = "500 9px Fredoka, sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#fff";
+      ctx.fillText("Zzz", Math.round(q.x + 8), Math.round(q.y - 16 - (agora / 400 + q.off) % 4));
+      return;
+    }
     let dx = 0, dy = 0;
     const ativo = q.animTipo && agora < q.animAte;
     if (ativo) {
-      if (q.animTipo === "apoio") dy = -Math.abs(Math.sin(agora / 130 + q.off)) * 4;     // salta de contente
-      else if (q.animTipo === "revolta") dx = Math.sin(agora / 40) * 1.2;                // treme de raiva
-      else dy = -Math.abs(Math.sin(agora / 200 + q.off)) * 2;                            // confuso
+      if (q.animTipo === "apoio") dy = -Math.abs(Math.sin(agora / 130 + q.off)) * 4;       // salta de contente
+      else if (q.animTipo === "revolta") dx = Math.sin(agora / 40) * 1.2;                  // treme de raiva
+      else if (q.animTipo === "discussao") dx = Math.sin(agora / 45) * 1.3;
+      else if (q.animTipo === "luta") dx = Math.sin(agora / 30) * 2.2;
+      else dy = -Math.abs(Math.sin(agora / 200 + q.off)) * 2;                              // confuso
     }
     ctx.drawImage(q.img, frame * SPRITE, q.linha * SPRITE, SPRITE, SPRITE,
                   Math.round(q.x - 16 + dx), Math.round(q.y - 30 + dy), SPRITE, SPRITE);
+    if (ativo && (q.animTipo === "discussao" || q.animTipo === "luta")) {                 // "!" de zanga
+      ctx.fillStyle = "#e22";
+      ctx.fillRect(Math.round(q.x + 9), Math.round(q.y - 38), 2, 5);
+      ctx.fillRect(Math.round(q.x + 9), Math.round(q.y - 32), 2, 2);
+    }
+    if (ativo && q.animTipo === "luta") {                                                 // nuvem de pó
+      ctx.fillStyle = "rgba(235,235,225,0.85)";
+      for (let i = 0; i < 4; i++) ctx.fillRect(Math.round(q.x - 12 + sorte() * 24), Math.round(q.y - 20 + sorte() * 18), 3, 3);
+    }
   });
   ctx.globalAlpha = 1;
   lista.filter((q) => q.falaTexto && agora < q.falaAte).forEach(desenharFala);
@@ -545,7 +747,7 @@ function desenharChegada(tp, agora) {
   // o nome aparece quando passas o rato por cima de alguém
   const alvo = [...lista].reverse().find((q) => Math.abs(rato.x - q.x) < 9 && rato.y > q.y - 30 && rato.y < q.y + 1);
   if (alvo) {
-    ctx.font = "9px 'Pixelify Sans', monospace";
+    ctx.font = "600 9px Fredoka, sans-serif";
     ctx.textAlign = "center";
     ctx.lineWidth = 3;
     ctx.strokeStyle = "#2a1a0e";
@@ -565,6 +767,7 @@ canvas.addEventListener("mouseleave", () => { rato.x = -99; rato.y = -99; });
 /* ========== CICLO PRINCIPAL ========== */
 function terminarIntro() {
   introAtiva = false;
+  document.querySelector(".jogo").classList.remove("intro");   // a caixa de resposta aparece
   el.campo.disabled = false;
   el.botao.disabled = false;
   mostrarPergunta();
@@ -581,8 +784,88 @@ function narrar(lista, t, idx, titulo) {
   return idx;
 }
 
+/* ========== TEMPESTADE: chuva, escuridão, relâmpagos e o raio que cai no barco ========== */
+const T_RAIO = 6100;   // momento em que o raio atinge o barco
+const CHUVA = Array.from({ length: 220 }, () => ({ x: sorte(), y: sorte() * SUPERFICIE, v: 5 + sorte() * 4 }));
+const FLASHES = [{ t: 3900, a: 0.25, d: 140 }, { t: 5000, a: 0.3, d: 160 }, { t: T_RAIO, a: 0.85, d: 380 }];
+let raio = null;       // pontos do raio (criado quando cai)
+let faiscas = [];
+
+function intensidadeTempestade(t) {
+  if (t < 2000) return 0;
+  if (t < 5000) return (t - 2000) / 3000;
+  if (t < 9500) return 1;
+  return Math.max(0, 1 - (t - 9500) / 1500);
+}
+
+function criarRaio(xAlvo, yAlvo) {
+  const x0 = xAlvo + (sorte() - 0.5) * 40;
+  const pts = [{ x: x0, y: 0 }];
+  for (let i = 1; i < 9; i++) {
+    const k = i / 9;
+    pts.push({ x: x0 + (xAlvo - x0) * k + (sorte() - 0.5) * 22, y: yAlvo * k });
+  }
+  pts.push({ x: xAlvo, y: yAlvo });
+  return pts;
+}
+
+function tracarRaio(pts) {
+  ctx.beginPath();
+  pts.forEach((p, i) => { if (i) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); });
+  ctx.stroke();
+}
+
+function desenharTempestade(t, agora, dt, b) {
+  const inten = intensidadeTempestade(t);
+
+  // céu escuro
+  if (inten > 0) { ctx.fillStyle = `rgba(8,14,40,${0.5 * inten})`; ctx.fillRect(0, 0, LARGURA, ALTURA); }
+
+  // chuva (só cai até à água, onde faz pequenas ondas)
+  const n = Math.round(CHUVA.length * inten);
+  for (let i = 0; i < n; i++) {
+    const g = CHUVA[i];
+    g.y += g.v * dt / 16;
+    const x = Math.round(g.x * LARGURA + g.y * 0.15);
+    if (g.y > SUPERFICIE) {
+      ctx.fillStyle = "rgba(210,230,250,0.6)";
+      ctx.fillRect(x - 2, SUPERFICIE, 4, 1);
+      g.y = -5; g.x = sorte();
+    } else {
+      ctx.fillStyle = "rgba(190,215,240,0.75)";
+      ctx.fillRect(x, Math.round(g.y), 1, 4);
+    }
+  }
+
+  // o raio cai no mastro
+  if (t >= T_RAIO && !raio) {
+    const alvo = aMundo(b, barcoCv.width / 2, 10);
+    raio = criarRaio(alvo.x, alvo.y);
+    for (let i = 0; i < 16; i++) {
+      faiscas.push({ x: alvo.x, y: alvo.y, vx: (sorte() - 0.5) * 0.18, vy: -0.05 - sorte() * 0.14, vida: 500 + sorte() * 300 });
+    }
+  }
+  if (raio && t < T_RAIO + 260) {
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "rgba(170,195,255,0.55)"; ctx.lineWidth = 4; tracarRaio(raio);
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.5; tracarRaio(raio);
+  }
+  faiscas.forEach((f) => { f.x += f.vx * dt; f.y += f.vy * dt; f.vy += 0.0004 * dt; f.vida -= dt; });
+  faiscas = faiscas.filter((f) => f.vida > 0);
+  faiscas.forEach((f, i) => { ctx.fillStyle = i % 2 ? "#ffd45a" : "#ff9a3c"; ctx.fillRect(Math.round(f.x), Math.round(f.y), 2, 2); });
+
+  // clarões
+  let flash = 0;
+  FLASHES.forEach((f) => { if (t >= f.t && t < f.t + f.d) flash = Math.max(flash, f.a * (1 - (t - f.t) / f.d)); });
+  if (flash > 0) { ctx.fillStyle = `rgba(235,240,255,${flash})`; ctx.fillRect(0, 0, LARGURA, ALTURA); }
+}
+
 function desenharMar(t, agora, dt) {
   ctx.fillStyle = "#1d4f8a"; ctx.fillRect(0, 0, LARGURA, ALTURA);
+  if (!imagens.back && !imagens.meio) {        // cenário de emergência (faltam as imagens do mar)
+    ctx.fillStyle = "#4a7fb8"; ctx.fillRect(0, 0, LARGURA, SUPERFICIE);
+    ctx.fillStyle = "#7a6a5a"; ctx.fillRect(0, 215, LARGURA, ALTURA - 215);
+  }
   desenharCamada(imagens.back, 0);
   desenharCamada(imagens.nuvens, 0, agora / 90);
   desenharCamada(imagens.meio, 0);
@@ -600,6 +883,7 @@ function desenharMar(t, agora, dt) {
   desenharSobreviventes(agora);
   ctx.fillStyle = "rgba(220,245,255,0.8)";
   bolhas.forEach((o) => ctx.fillRect(Math.round(o.x), Math.round(o.y), o.r, o.r));
+  desenharTempestade(t, agora, dt, b);
 }
 
 function ciclo(agora) {
@@ -669,11 +953,14 @@ function novo(tag, classe, texto) {
 
 function icone(i, grande) {
   const d = novo("div", grande ? "icone grande" : "icone");
-  d.style.backgroundImage = `url("${encodeURI(FICHEIROS[i])}")`;
+  d.style.backgroundImage = `url("${pessoas[i].iconeUrl}")`;
   return d;
 }
 
 function estadoDe(q) {
+  if (q.morto) return "Morreu";
+  if (q.exilado) return "Expulso da ilha";
+  if (q.desmaiado) return "Desmaiado de fome";
   if (q.vida < 30) return "Muito debilitado";
   if (q.fome >= 70) return "Faminto";
   if (q.moralInd < 25) return "Revoltado";
@@ -691,6 +978,12 @@ function barra(rotulo, valor, tipo) {
   return linha;
 }
 
+function rotuloNome(n, de) {
+  const o = porNome(n);
+  const t = estado.tensao[chaveTensao(de, n)] || 0;
+  return n + (o && o.morto ? " (morreu)" : "") + (t ? ` (${t} ${t === 1 ? "briga" : "brigas"})` : "");
+}
+
 function linhaInfo(rotulo, itens) {
   const p = novo("p", "linha-info");
   p.append(novo("b", "", rotulo + " "), document.createTextNode(itens.length ? itens.join(", ") : "ninguém (ainda)"));
@@ -700,7 +993,7 @@ function linhaInfo(rotulo, itens) {
 function renderMenu(sel) {
   menu.lista.replaceChildren();
   pessoas.forEach((q, i) => {
-    const b = novo("button", "cartao" + (i === sel ? " ativo" : "") + (q.fome >= 70 || q.vida < 30 ? " alerta" : ""));
+    const b = novo("button", "cartao" + (i === sel ? " ativo" : "") + (q.fome >= 70 || q.vida < 30 ? " alerta" : "") + (q.morto ? " morto" : ""));
     b.type = "button";
     b.append(icone(i), novo("span", "", q.nome));
     b.addEventListener("click", () => renderMenu(i));
@@ -714,8 +1007,10 @@ function renderMenu(sel) {
     barra("Vida", q.vida, "vida"), barra("Fome", q.fome, "fome"), barra("Humor", q.moralInd, "humor"),
     linhaInfo("Gosta de:", p.gosta.map((t) => NOME_TEMA[t])),
     linhaInfo("Odeia:", p.odeia.map((t) => NOME_TEMA[t])),
-    linhaInfo("Amigos:", r.amigos),
-    linhaInfo("Rivais:", r.rivais)
+    linhaInfo("Amigos:", r.amigos.map((n) => rotuloNome(n, q.nome))),
+    linhaInfo("Rivais:", r.rivais.map((n) => rotuloNome(n, q.nome))),
+    linhaInfo("Constituição:", [descricaoSatisfacao(q)]),
+    ...(estado.lider === q.nome ? [linhaInfo("Papel:", ["Líder da ilha"])] : [])
   );
 }
 
@@ -734,6 +1029,123 @@ window.addEventListener("keydown", (e) => {
   if (!menu.caixa.hidden) fecharMenu(); else saltarIntro();
 });
 
+/* ========== FICHEIROS TOLERANTES ==========
+   O jogo procura cada imagem em várias pastas possíveis (maiúsculas, nomes alternativos) e, se não
+   encontrar, usa um desenho de emergência. Assim funciona em qualquer PC, desde que a pasta rpg-ilha
+   seja copiada inteira (todos os caminhos são relativos ao index.html). */
+const faltas = [];
+const PASTAS_PERSONAGENS = ["assets/characters", "assets/personagens", "assets"];
+const PASTAS_MAR = ["assets/mar/Layers/", "assets/mar/layers/", "assets/mar/", "assets/Ocean View Files/Ocean View Files/Layers/", "assets/Ocean View Files/Layers/"];
+const maiuscula = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+
+function tentarImagem(caminho) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const limite = setTimeout(() => resolve(null), 5000);   // nunca fica preso à espera de uma imagem
+    img.onload = () => { clearTimeout(limite); resolve(img); };
+    img.onerror = () => { clearTimeout(limite); resolve(null); };
+    img.src = encodeURI(caminho);
+  });
+}
+
+async function carregarPrimeira(candidatos) {
+  for (const c of candidatos) {
+    const img = await tentarImagem(c);
+    if (img) return img;
+  }
+  return null;
+}
+
+function candidatosMar(nome) {
+  const lista = [];
+  PASTAS_MAR.forEach((b) => { lista.push(`${b}${TEMPO}/${nome}.png`, `${b}${TEMPO.toLowerCase()}/${nome}.png`); });
+  return lista;
+}
+
+function candidatosPraia(nome) {
+  const lista = [];
+  PASTAS_PRAIA.forEach((b) => { lista.push(`${b}${nome}.png`, `${b}${maiuscula(nome)}.png`); });
+  return lista;
+}
+
+let pastaPersonagensOK = null;   // a pasta que funcionou à primeira fica à frente para os restantes
+function candidatosPersonagem(caminho) {
+  const nome = caminho.split("/").pop();
+  const genero = caminho.includes("/female/") ? "female" : "male";
+  const lista = [caminho];
+  PASTAS_PERSONAGENS.forEach((b) => {
+    [genero, maiuscula(genero)].forEach((p) => lista.push(`${b}/${p}/${nome}`));
+    lista.push(`${b}/${nome}`);
+  });
+  if (pastaPersonagensOK) lista.sort((x, y) => (y.startsWith(pastaPersonagensOK) ? 1 : 0) - (x.startsWith(pastaPersonagensOK) ? 1 : 0));
+  return [...new Set(lista)];
+}
+
+/* Personagem de emergência: boneco desenhado em código, com a mesma folha de 96x128 (3 passos x 4 direções) */
+function criarSpriteGerado(i) {
+  const cv = document.createElement("canvas");
+  cv.width = 96; cv.height = 128;
+  const g = cv.getContext("2d");
+  const pele = ["#f2c9a0", "#d9a577", "#b9805a", "#8d5a3b"][i % 4];
+  const cabelo = ["#2a1a0e", "#6b4224", "#c8a15a", "#a63a2a", "#555555", "#3a2a6a"][(i * 7) % 6];
+  const roupa = ["#3f7fc4", "#4f9a3a", "#d9822b", "#b0402c", "#8a4fc4", "#2a9aa0", "#d4b02a"][(i * 5) % 7];
+  for (let linha = 0; linha < 4; linha++) {
+    for (let col = 0; col < 3; col++) {
+      const x = col * 32, y = linha * 32;
+      const passo = [0, 2, -2][col];                                   // pernas a andar
+      g.fillStyle = "#2a1a0e";
+      g.fillRect(x + 11, y + 24 + Math.max(0, passo), 4, 6 - Math.max(0, passo));
+      g.fillRect(x + 17, y + 24 + Math.max(0, -passo), 4, 6 - Math.max(0, -passo));
+      g.fillStyle = roupa; g.fillRect(x + 10, y + 14, 12, 11);        // corpo
+      g.fillStyle = pele; g.fillRect(x + 8, y + 15, 3, 8); g.fillRect(x + 21, y + 15, 3, 8);   // braços
+      g.fillRect(x + 11, y + 4, 10, 10);                              // cabeça
+      g.fillStyle = cabelo; g.fillRect(x + 10, y + 2, 12, linha === 3 ? 11 : 5);
+      g.fillStyle = "#2a1a0e";
+      if (linha === 0) { g.fillRect(x + 13, y + 9, 2, 2); g.fillRect(x + 17, y + 9, 2, 2); }
+      if (linha === 1) g.fillRect(x + 12, y + 9, 2, 2);
+      if (linha === 2) g.fillRect(x + 18, y + 9, 2, 2);
+    }
+  }
+  return cv;
+}
+
+async function carregarPersonagem(caminho, i) {
+  const img = await carregarPrimeira(candidatosPersonagem(caminho));
+  if (img) {
+    if (!pastaPersonagensOK) pastaPersonagensOK = decodeURI(img.src).includes("/characters/") ? "assets/characters" : null;
+    return img;
+  }
+  faltas.push(`personagem: ${caminho.split("/").pop()}`);
+  return criarSpriteGerado(i);
+}
+
+function urlDoSprite(img) {
+  if (img && img.src) return img.src;
+  return img && typeof img.toDataURL === "function" ? img.toDataURL() : "";
+}
+
+function mostrarAviso(lista) {
+  console.warn("Ficheiros em falta:", lista);
+  const caixa = document.getElementById("aviso");
+  if (!caixa) return;
+  caixa.textContent = `Não encontrei ${lista.length} ficheiro(s) e usei desenhos de emergência. Confirma que copiaste a pasta assets inteira. (clica para fechar)`;
+  caixa.hidden = false;
+  caixa.addEventListener("click", () => { caixa.hidden = true; });
+}
+
+/* Os erros aparecem num aviso no ecrã (não só na consola) */
+function mostrarErro(msg, ficheiro, linha) {
+  const onde = ficheiro ? ` (${String(ficheiro).split("/").pop()}:${linha})` : "";
+  console.error("Erro no jogo:", msg, onde);
+  const caixa = document.getElementById("aviso");
+  if (!caixa) return;
+  caixa.textContent = `Erro no jogo: ${msg}${onde}. (clica para fechar)`;
+  caixa.hidden = false;
+  caixa.addEventListener("click", () => { caixa.hidden = true; }, { once: true });
+}
+window.addEventListener("error", (e) => mostrarErro(e.message, e.filename, e.lineno));
+window.addEventListener("unhandledrejection", (e) => mostrarErro(e.reason?.message ?? String(e.reason)));
+
 /* ========== ARRANQUE ========== */
 async function iniciar() {
   ajustarCanvas();
@@ -743,19 +1155,37 @@ async function iniciar() {
   el.titulo.textContent = "O naufrágio";
   el.texto.textContent = "A carregar o mar...";
 
-  const base = `assets/mar/Layers/${TEMPO}/`;
   [imagens.back, imagens.nuvens, imagens.meio] = await Promise.all([
-    carregarImagem(base + "Back.png"),
-    carregarImagem(base + "Clouds.png"),
-    carregarImagem(base + "Middle.png")
+    carregarPrimeira(candidatosMar("Back")),
+    carregarPrimeira(candidatosMar("Clouds")),
+    carregarPrimeira(candidatosMar("Middle"))
   ]);
+  ["Back", "Clouds", "Middle"].forEach((n, i) => {
+    if (![imagens.back, imagens.nuvens, imagens.meio][i]) faltas.push(`mar: ${n}.png`);
+  });
 
-  imagens.pessoas = await Promise.all(FICHEIROS.map((f) => carregarImagem(f)));
+  el.texto.textContent = "A carregar as personagens...";
+  imagens.pessoas = await Promise.all(FICHEIROS.map((f, i) => carregarPersonagem(f, i)));
+  el.texto.textContent = "A carregar a praia...";
   await carregarPraia();
   criarPessoas();
+
+  const salvo = lerSave();
+  if (salvo && window.confirm(`Encontrei um jogo guardado (dia ${salvo.estado.dia}, ${salvo.estado.gente} sobreviventes). Queres continuar? (Cancelar = novo jogo)`)) {
+    restaurarSave(salvo);
+    atualizarEstado();
+    entrarPraiaDireto();
+    ultimoFrame = performance.now();
+    requestAnimationFrame(ciclo);
+    retomarModo(salvo);
+    if (faltas.length) mostrarAviso(faltas);
+    return;
+  }
+  apagarSave();
 
   t0 = performance.now();
   ultimoFrame = t0;
   requestAnimationFrame(ciclo);
+  if (faltas.length) mostrarAviso(faltas);
 }
-iniciar().catch(console.error);
+iniciar().catch((e) => mostrarErro(e.message));
